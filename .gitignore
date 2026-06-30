@@ -1,2 +1,6 @@
 ignore
 .env
+__pycache__/
+*.pyc
+.venv/
+audit_log.db
