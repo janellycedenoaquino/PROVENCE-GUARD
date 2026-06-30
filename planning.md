@@ -230,3 +230,107 @@ Flask App
 **How to verify:**
 - Submit inputs that produce all three label variants and confirm the text matches the spec exactly
 - Submit a `POST /appeal` with a real `content_id`, then call `GET /log` and confirm the entry shows `status: "under_review"` and `appeal_reasoning` populated
+
+---
+
+## Stretch Feature: Multi-Modal Support
+
+### Second Content Type: Image Descriptions
+
+Extend `POST /submit` to accept an optional `content_type` field (`"text"` or `"image_description"`). When `content_type` is `"image_description"`, the pipeline uses a specialized LLM prompt calibrated for that format.
+
+**Why image descriptions need different detection:**
+AI-generated image descriptions tend to be clinically precise, formulaic, and impersonal — "A woman sits at a minimalist desk with a laptop, bathed in warm afternoon light." Human descriptions are more casual, subjective, and contextual — "my friend took this at sunset, you can barely see us but the lighting was insane." The same stylometric signals apply, but the LLM prompt is rewritten to look for these format-specific patterns.
+
+**Signals:**
+- LLM prompt adapted to evaluate image description conventions vs. prose conventions
+- Stylometric heuristics remain unchanged — sentence variance and TTR still differentiate AI from human descriptions
+- Word length signal unchanged — AI image descriptions also favor formal vocabulary
+
+**Audit log:** `content_type` is stored in every log entry so detection patterns can be analyzed per content type via `GET /analytics`.
+
+---
+
+## Stretch Feature: Analytics Dashboard
+
+A `GET /analytics` endpoint returning aggregated stats from the audit log.
+
+**Detection patterns** — count and percentage breakdown of `likely_ai`, `uncertain`, and `likely_human` classifications across all submissions.
+
+**Appeal rate** — total appeals filed and rate as a percentage of total submissions. High appeal rates signal the system may be misclassifying frequently enough to frustrate creators.
+
+**Third metric: Average confidence by attribution** — the mean confidence score within each attribution category. This shows how decisive the system is when it commits to a call. A `likely_ai` average of 0.78 vs an `uncertain` average of 0.51 validates that the threshold boundaries are producing meaningful distinctions, not arbitrary ones.
+
+**Bonus:** Verified creator count — how many creators hold a provenance certificate.
+
+---
+
+## Stretch Feature: Provenance Certificate
+
+### Design
+
+A "verified human" credential that a creator can earn through a two-step process:
+
+1. **Eligibility check** — the creator must have at least one `likely_human` classification on record in the audit log. This uses the system's own data as evidence rather than requiring external identity verification.
+2. **Verification request** — the creator calls `POST /verify` with their `creator_id` and a signed declaration. The system issues a certificate with a unique ID and timestamp.
+
+### Storage
+
+A new `verified_creators` table in SQLite:
+- `creator_id` — links to submissions in the audit log
+- `certificate_id` — unique UUID issued at verification time
+- `verified_at` — ISO timestamp
+- `verification_statement` — the creator's declaration (stored for audit purposes)
+
+### Display
+
+When a verified creator submits content, the response includes a `provenance_certificate` block:
+
+```json
+{
+  "provenance_certificate": {
+    "status": "verified_human",
+    "certificate_id": "cert-xxxxxxxx",
+    "verified_at": "2026-06-30T00:00:00+00:00",
+    "display_badge": "Verified Human Creator"
+  }
+}
+```
+
+### Endpoints
+
+- `POST /verify` — accepts `{creator_id, verification_statement}`, checks eligibility, issues certificate
+- `GET /certificate/<creator_id>` — returns current certificate for a creator
+
+---
+
+## Stretch Feature: Ensemble Detection
+
+### Signal 3 — Lexical Sophistication (Average Word Length)
+
+**What it measures:**
+Average character length of all words in the text, normalized to a 0–1 score. AI text tends to favor longer, more sophisticated vocabulary ("transformative", "paradigm", "implications"). Human casual writing uses shorter, everyday words ("fine", "ok", "went", "said").
+
+**Why it differs between human and AI writing:**
+Language models are trained on formal text and tend to generate more "impressive" word choices even when a simpler word would do. Human writing, especially informal writing, skews toward shorter words naturally.
+
+**Output format:**
+A float between 0 and 1. Average word length of 3 chars or less → score 0.0 (very human-like). Average word length of 7+ chars → score 1.0 (very AI-like).
+
+**Blind spot:**
+Technical human writing (code documentation, academic papers) uses long domain-specific words. A human developer or academic writer would score high on this metric despite being genuinely human.
+
+### Updated Weighting Approach
+
+With three signals, the confidence formula becomes:
+
+```
+combined_score = (0.50 × llm_score) + (0.30 × style_score) + (0.20 × word_len_score)
+```
+
+**Rationale:**
+- LLM retains the highest weight (50%) — it evaluates holistic semantic and stylistic quality that neither structural metric can replicate.
+- Stylometric drops from 40% to 30% — it remains the primary structural signal but yields weight to the new third signal.
+- Word length takes 20% — it adds a genuinely new dimension (lexical sophistication) without dominating the result.
+
+All three signals are independent: LLM is semantic, stylometric is structural, word length is lexical. The combination makes the pipeline meaningfully harder to fool than any single signal.

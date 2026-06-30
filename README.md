@@ -252,6 +252,175 @@ I provided the Signal 2 description and Uncertainty Representation section to Cl
 
 ---
 
+## Stretch Feature: Ensemble Detection
+
+Three independent signals now feed the pipeline with a documented weighting approach.
+
+### Signal 3 — Lexical Sophistication (Average Word Length)
+
+**What it measures:** Average character length of all words in the text. AI text tends to favor longer, more sophisticated vocabulary ("transformative", "paradigm", "implications"). Human casual writing skews toward shorter everyday words ("ok", "fine", "went", "said").
+
+**Normalization:** avg word length of 3 chars → 0.0 (human-like); avg word length of 7+ chars → 1.0 (AI-like).
+
+**Blind spot:** Technical human writing (academic papers, documentation) uses long domain-specific words and would score high on this metric despite being human-authored.
+
+### Updated Ensemble Weighting
+
+```
+combined_score = (0.50 × llm_score) + (0.30 × style_score) + (0.20 × word_len_score)
+```
+
+| Signal | Weight | What it captures |
+|---|---|---|
+| LLM classification | 50% | Semantic coherence, voice, holistic writing quality |
+| Stylometric heuristics | 30% | Sentence length variance, vocabulary diversity (TTR) |
+| Lexical sophistication | 20% | Average word length — formality and vocabulary register |
+
+The three signals are genuinely independent (semantic, structural, lexical), making the ensemble harder to fool than any single signal. Sample scores across the range:
+
+| Input | LLM | Style | Word Len | Combined | Attribution |
+|---|---|---|---|---|---|
+| Repetitive AI text | 0.90 | 0.54 | 0.61 | **0.73** | likely_ai |
+| Casual human text | 0.20 | 0.11 | 0.30 | **0.19** | likely_human |
+| Formal human (borderline) | 0.70 | 0.29 | 0.73 | **0.59** | uncertain |
+| Lightly edited AI | 0.40 | 0.31 | 0.51 | **0.40** | uncertain |
+
+---
+
+## Stretch Feature: Analytics Dashboard
+
+`GET /analytics` returns aggregated detection stats from the audit log.
+
+**Metrics:**
+- **Detection patterns** — count and percentage breakdown by attribution
+- **Appeal rate** — total appeals and rate as % of submissions
+- **Average confidence by attribution** — how decisive the system is within each category (third metric)
+- **Verified creators** — count of creators holding a provenance certificate
+
+**Sample response:**
+```json
+{
+    "total_submissions": 5,
+    "attribution_breakdown": {
+        "likely_ai": 1,
+        "uncertain": 2,
+        "likely_human": 2
+    },
+    "detection_rates": {
+        "likely_ai_pct": 20.0,
+        "uncertain_pct": 40.0,
+        "likely_human_pct": 40.0
+    },
+    "appeal_rate": {
+        "total_appeals": 1,
+        "rate_pct": 20.0
+    },
+    "avg_confidence_by_attribution": {
+        "likely_ai": 0.7364,
+        "uncertain": 0.6808,
+        "likely_human": 0.2144
+    },
+    "verified_creators": 1
+}
+```
+
+The `avg_confidence_by_attribution` metric validates that threshold boundaries are meaningful: `likely_ai` averages 0.74, `uncertain` averages 0.68, and `likely_human` averages 0.21 — clear separation across all three categories.
+
+---
+
+## Stretch Feature: Provenance Certificate
+
+A "verified human" credential that creators can earn through a two-step process.
+
+### Verification Step
+
+1. Creator submits content via `POST /submit` and receives a `likely_human` classification
+2. Creator calls `POST /verify` with their `creator_id` and a signed declaration
+3. System checks eligibility (must have at least one `likely_human` classification on record)
+4. If eligible, a certificate is issued with a unique ID and timestamp
+
+### Display
+
+Once verified, every subsequent submission by that creator includes a `provenance_certificate` block:
+
+```json
+{
+  "provenance_certificate": {
+    "status": "verified_human",
+    "certificate_id": "cert-1d75255e",
+    "verified_at": "2026-06-30T00:25:14.105316+00:00",
+    "display_badge": "Verified Human Creator"
+  }
+}
+```
+
+### Endpoints
+
+**`POST /verify`** — request a certificate
+```bash
+curl -X POST http://localhost:5001/verify \
+  -H "Content-Type: application/json" \
+  -d '{"creator_id": "janelly", "verification_statement": "I am a human writer and all submitted content is my original work."}'
+```
+
+Response:
+```json
+{
+  "status": "verified",
+  "creator_id": "janelly",
+  "certificate_id": "cert-1d75255e",
+  "verified_at": "2026-06-30T00:25:14.105316+00:00",
+  "display_badge": "Verified Human Creator",
+  "message": "Your provenance certificate has been issued. It will appear on all future submissions."
+}
+```
+
+**`GET /certificate/<creator_id>`** — look up a creator's certificate
+
+Creators without a `likely_human` classification receive a `403` with a clear explanation:
+```json
+{
+  "error": "Not eligible. You must have at least one submission classified as likely_human before requesting verification."
+}
+```
+
+---
+
+## Stretch Feature: Multi-Modal Support
+
+`POST /submit` accepts an optional `content_type` field — `"text"` (default) or `"image_description"`. When `"image_description"` is passed, a specialized LLM prompt is used that's calibrated for that format's patterns.
+
+**Why image descriptions need different detection:**
+AI-generated image descriptions are clinically precise and formulaic ("A woman sits at a minimalist desk, bathed in warm afternoon light"). Human descriptions are casual and contextual ("this is from my birthday last year, the lighting is terrible but I love this photo"). The same stylometric and word-length signals apply, but the LLM prompt is rewritten to evaluate these format-specific signals.
+
+**Example — AI-style image description:**
+```bash
+curl -X POST http://localhost:5001/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "A young woman sits at a minimalist wooden desk, bathed in warm afternoon light streaming through a large window. She gazes thoughtfully at an open laptop, her expression serene and focused.",
+    "creator_id": "user-1",
+    "content_type": "image_description"
+  }'
+```
+Response: `confidence: 0.67, attribution: uncertain, llm_score: 0.90`
+
+**Example — Human image description:**
+```bash
+curl -X POST http://localhost:5001/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "this is from my birthday last year, we were all crammed into my kitchen and someone knocked over the cake but we still ate it lol. the lighting is terrible but i love this photo.",
+    "creator_id": "user-2",
+    "content_type": "image_description"
+  }'
+```
+Response: `confidence: 0.10, attribution: likely_human, llm_score: 0.00`
+
+Invalid `content_type` values return a `400` with a clear error message. The `content_type` field is stored in every audit log entry.
+
+---
+
 ## Portfolio Walkthrough
 
 *[Link to walkthrough video — recorded separately]*
