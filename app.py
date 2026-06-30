@@ -1,14 +1,22 @@
 import uuid
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from signals import classify_with_llm, compute_stylometric_score, compute_confidence
-from database import init_db, log_submission, get_log
+from database import init_db, log_submission, log_appeal, get_log
 
 load_dotenv()
 
 app = Flask(__name__)
 init_db()
 
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 
 def generate_label(score: float, attribution: str) -> str:
@@ -34,6 +42,7 @@ def generate_label(score: float, attribution: str) -> str:
 
 
 @app.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     data = request.get_json()
 
@@ -62,6 +71,28 @@ def submit():
         "llm_score": llm_score,
         "style_score": style_score,
         "label": label
+    })
+
+
+@app.route("/appeal", methods=["POST"])
+def appeal():
+    data = request.get_json()
+
+    if not data or "content_id" not in data or "creator_reasoning" not in data:
+        return jsonify({"error": "Request must include 'content_id' and 'creator_reasoning'"}), 400
+
+    content_id = data["content_id"]
+    reasoning = data["creator_reasoning"]
+
+    found = log_appeal(content_id, reasoning)
+
+    if not found:
+        return jsonify({"error": f"No submission found with content_id '{content_id}'"}), 404
+
+    return jsonify({
+        "status": "received",
+        "content_id": content_id,
+        "message": "Your appeal has been received and your submission is now under review. A human reviewer will assess your case."
     })
 
 

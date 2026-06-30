@@ -42,6 +42,26 @@ def log_submission(content_id, creator_id, attribution, confidence, llm_score, s
         conn.commit()
 
 
+def log_appeal(content_id: str, reasoning: str) -> bool:
+    """Updates the record to under_review and stores appeal details.
+    Returns False if content_id not found."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute(
+            "SELECT id FROM audit_log WHERE content_id = ?", (content_id,)
+        )
+        if cursor.fetchone() is None:
+            return False
+        conn.execute("""
+            UPDATE audit_log
+            SET status = 'under_review',
+                appeal_reasoning = ?,
+                appeal_timestamp = ?
+            WHERE content_id = ?
+        """, (reasoning, datetime.now(timezone.utc).isoformat(), content_id))
+        conn.commit()
+    return True
+
+
 def get_log(limit: int = 20) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
